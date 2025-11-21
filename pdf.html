@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Low-Level JPG to PDF</title>
+</head>
+<body>
+  <h3>Low-Level JPG → PDF Converter</h3>
+  <input type="file" id="file" accept="image/jpeg">
+  <button onclick="convert()">Convert</button>
+
+<script>
+async function convert() {
+    const file = document.getElementById("file").files[0];
+    if (!file) { alert("Choose a JPG file first!"); return; }
+
+    const jpegBytes = new Uint8Array(await file.arrayBuffer());
+    const { width, height } = await getSize(file);
+
+    const pdfBytes = createPDF(jpegBytes, width, height);
+
+    // ALWAYS download
+    const blob = new Blob([pdfBytes], { type: "application/pdf" });
+    const url = URL.createObjectURL(blob);
+
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "image.pdf";
+    a.click();
+
+    URL.revokeObjectURL(url);
+}
+
+function getSize(file) {
+    return new Promise((resolve) => {
+        const url = URL.createObjectURL(file);
+        const img = new Image();
+        img.onload = () => {
+            resolve({ width: img.naturalWidth, height: img.naturalHeight });
+            URL.revokeObjectURL(url);
+        };
+        img.src = url;
+    });
+}
+
+/* ------------------ LOW LEVEL PDF BUILDER ------------------ */
+function createPDF(jpeg, w, h) {
+    const enc = new TextEncoder();
+
+    // Minimal PDF structure
+    const header = enc.encode("%PDF-1.4\n");
+    const obj1 = enc.encode("1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n");
+    const obj2 = enc.encode("2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n");
+    const obj3 = enc.encode(
+        `3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 ${w} ${h}] /Resources << /XObject << /Im0 4 0 R >> >> /Contents 5 0 R >> endobj\n`
+    );
+
+    // Image object header
+    const obj4Header = enc.encode(
+        `4 0 obj << /Type /XObject /Subtype /Image /Width ${w} /Height ${h} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${jpeg.length} >> stream\n`
+    );
+    const obj4Footer = enc.encode("endstream endobj\n");
+
+    // Content stream to draw full image
+    const content = `q\n${w} 0 0 ${h} 0 0 cm\n/Im0 Do\nQ\n`;
+    const obj5 = enc.encode(
+        `5 0 obj << /Length ${content.length} >> stream\n${content}endstream endobj\n`
+    );
+
+    // Combine all parts
+    const chunks = [
+        header,
+        obj1,
+        obj2,
+        obj3,
+        obj4Header,
+        jpeg,
+        enc.encode("\n"),
+        obj4Footer,
+        obj5,
+        enc.encode("xref\n0 6\n0000000000 65535 f \n")
+    ];
+
+    // Calculate offsets (xref table)
+    let offset = header.length;
+    const offsets = [offset];
+    offset += obj1.length;
+    offsets.push(offset);
+    offset += obj2.length;
+    offsets.push(offset);
+    offset += obj3.length;
+    offsets.push(offset);
+    offset += obj4Header.length + jpeg.length + 1 + obj4Footer.length;
+    offsets.push(offset);
+    offset += obj5.length;
+
+    // Build xref entries
+    let xref = "";
+    for (let off of offsets) {
+        xref += String(off).padStart(10, "0") + " 00000 n \n";
+    }
+
+    const xrefTable = enc.encode(xref);
+
+    const trailer = enc.encode(
+        `trailer << /Size 6 /Root 1 0 R >>\nstartxref\n${offset}\n%%EOF`
+    );
+
+    return merge(chunks.concat([xrefTable, trailer]));
+}
+
+/* Merge into 1 Uint8Array */
+function merge(chunks) {
+    let total = 0;
+    for (let c of chunks) total += c.length;
+    const out = new Uint8Array(total);
+    let pos = 0;
+    for (let c of chunks) { out.set(c, pos); pos += c.length; }
+    return out;
+}
+</script>
+
+</body>
+</html>
